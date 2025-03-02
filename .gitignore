@@ -1,0 +1,19 @@
+# Folder build dan install (yang dihasilkan oleh colcon)
+build/
+install/
+
+# File log
+log/
+
+# Folder test (jika tidak ingin disertakan)
+test/
+
+# File konfigurasi sementara dan cache Python
+__pycache__/
+*.pyc
+
+# File konfigurasi lain yang tidak perlu (misalnya, setup.cfg, jika tidak diperlukan)
+# Jika setup.cfg diperlukan untuk konfigurasi build, jangan masukkan baris berikut:
+# setup.cfg
+
+# File lain yang tidak perlu (sesuaikan dengan kebutuhan)
