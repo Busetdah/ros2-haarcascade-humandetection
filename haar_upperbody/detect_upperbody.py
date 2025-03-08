@@ -63,6 +63,8 @@ class FusedDetectorMultiAngle(Node):
         self.tracker = None
         self.kalman = None
 
+        self.human_id_counter = 0  # Initialize human_id_counter
+        self.human_id = None
         self.timer = self.create_timer(0.033, self.timer_callback)
 
     def timer_callback(self):
@@ -74,6 +76,10 @@ class FusedDetectorMultiAngle(Node):
         # Flip frame agar mirror
         frame = cv2.flip(frame, 1)
         display_frame = frame.copy()
+
+        # Adjust brightness and contrast
+        frame = self.adjust_brightness_contrast(frame)
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         # Deteksi menggunakan semua cascade
@@ -115,6 +121,9 @@ class FusedDetectorMultiAngle(Node):
             cv2.rectangle(display_frame, (x, y), (x+w, y+h), (255,255,0), 2)
             detections.append((x, y, w, h))
         
+        # Apply additional filtering to improve accuracy
+        detections = self.filter_detections(detections)
+
         human_detected = len(detections) > 0
         if not human_detected:
             self.open_hand_start_time = None
@@ -224,16 +233,23 @@ class FusedDetectorMultiAngle(Node):
                     self.locked_target_bbox = None
                     self.tracker = None
                     self.kalman = None
+                    self.human_id = None
                 else:
                     _, _, orig_w, orig_h = self.locked_target_bbox
                     fused_bbox = (int(center_x - orig_w/2), int(center_y - orig_h/2), orig_w, orig_h)
                     cv2.rectangle(display_frame, (fused_bbox[0], fused_bbox[1]),
                                   (fused_bbox[0]+orig_w, fused_bbox[1]+orig_h), (255,0,0), 3)
+                    if self.human_id is not None:
+                        cv2.putText(display_frame, f"{self.human_id}", (fused_bbox[0], fused_bbox[1] - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,0,0), 2)
             else:
                 _, _, orig_w, orig_h = self.locked_target_bbox
                 fused_bbox = (int(center_x - orig_w/2), int(center_y - orig_h/2), orig_w, orig_h)
                 cv2.rectangle(display_frame, (fused_bbox[0], fused_bbox[1]),
                               (fused_bbox[0]+orig_w, fused_bbox[1]+orig_h), (255,0,0), 3)
+                if self.human_id is not None:
+                    cv2.putText(display_frame, f"{self.human_id}", (fused_bbox[0], fused_bbox[1] - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,0,0), 2)
 
         image_msg = self.bridge.cv2_to_imgmsg(display_frame, encoding="bgr8")
         self.image_pub.publish(image_msg)
@@ -244,6 +260,8 @@ class FusedDetectorMultiAngle(Node):
         self.get_logger().info(f"Initialize tracker dengan bbox: {bbox}")
         self.tracker = cv2.TrackerKCF_create()
         self.tracker.init(frame, tuple(bbox))
+        self.human_id_counter += 1
+        self.human_id = self.human_id_counter
 
     def initialize_kalman(self, bbox):
         x, y, w, h = bbox
@@ -257,7 +275,7 @@ class FusedDetectorMultiAngle(Node):
                                                  [0, 1, 0, 1],
                                                  [0, 0, 1, 0],
                                                  [0, 0, 0, 1]], np.float32)
-        self.kalman.processNoiseCov = np.eye(4, dtype=np.float32) * 0.03
+        self.kalman.processNoiseCov = np.eye(4, dtype=np.float32) * 0.1
         self.kalman.statePre = np.array([[np.float32(center_x)],
                                          [np.float32(center_y)],
                                          [0],
@@ -296,6 +314,44 @@ class FusedDetectorMultiAngle(Node):
         area2 = w2 * h2
         union_area = area1 + area2 - inter_area
         return inter_area / union_area if union_area > 0 else 0
+
+    def apply_nms(self, detections, iou_threshold):
+        if len(detections) == 0:
+            return []
+
+        boxes = np.array(detections)
+        x1 = boxes[:, 0]
+        y1 = boxes[:, 1]
+        x2 = boxes[:, 0] + boxes[:, 2]
+        y2 = boxes[:, 1] + boxes[:, 3]
+        scores = boxes[:, 2] * boxes[:, 3]  # Use area as score
+
+        indices = cv2.dnn.NMSBoxes(
+            boxes.tolist(), scores.tolist(), score_threshold=0.0, nms_threshold=iou_threshold)
+
+        filtered_detections = [detections[i] for i in indices.flatten()]
+        return filtered_detections
+
+    def filter_detections(self, detections):
+        filtered_detections = []
+        for det in detections:
+            x, y, w, h = det
+            if w > 50 and h > 50:  # Example criteria: width and height should be greater than 50 pixels
+                filtered_detections.append(det)
+        return filtered_detections
+
+    def adjust_brightness_contrast(self, image):
+        # Convert to HSV (Hue, Saturation, Value) color space
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        h, s, v = cv2.split(hsv)
+
+        # Adjust brightness
+        v = cv2.equalizeHist(v)
+
+        # Merge back the channels and convert to BGR
+        hsv = cv2.merge([h, s, v])
+        adjusted_image = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        return adjusted_image
 
     def destroy_node(self):
         self.cap.release()
